@@ -1,6 +1,12 @@
 # Compiled class file
 *.class
 
+# Intellij
+*.idea/**
+
+# Terraform
+*.terraform**
+
 # Log file
 *.log
 
