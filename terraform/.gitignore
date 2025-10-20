@@ -1,0 +1,24 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfvars
+*.tfvars.json
+
+# Cloud-init generated files
+cloud-init-scripts/generated/
+
+# Ansible
+ansible/inventory.ini
+ansible/registration_cmd.sh
+ansible/*.retry
+ansible/.ansible/
+
+# SSH keys
+*.pem
+*.key
+
+# OS
+.DS_Store
+Thumbs.db

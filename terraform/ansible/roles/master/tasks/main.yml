@@ -1,0 +1,278 @@
+---
+- name: Ensure Rancher data directory exists
+  file:
+    path: "{{ rancher_data_dir }}"
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+
+- name: Check if Rancher container is already running
+  docker_container_info:
+    name: "{{ rancher_container_name }}"
+  register: rancher_container
+  ignore_errors: true
+
+- name: Deploy Rancher container
+  docker_container:
+    name: "{{ rancher_container_name }}"
+    image: "rancher/rancher:{{ rancher_version }}"
+    state: started
+    restart_policy: unless-stopped
+    privileged: true
+    ports:
+      - "{{ rancher_http_port }}:80"
+      - "{{ rancher_https_port }}:443"
+    volumes:
+      - "{{ rancher_data_dir }}:/var/lib/rancher"
+  when: rancher_container.exists == false
+
+- name: Wait for Rancher to be ready
+  uri:
+    url: "https://{{ ansible_host }}/ping"
+    method: GET
+    validate_certs: no
+    status_code: 200
+  register: result
+  until: result.status == 200
+  retries: 60
+  delay: 5
+
+- name: Wait additional time for Rancher to fully initialize
+  pause:
+    seconds: 30
+
+- name: Get Rancher bootstrap password
+  shell: docker logs {{ rancher_container_name }} 2>&1 | grep "Bootstrap Password:" | awk '{print $NF}'
+  register: bootstrap_password
+  changed_when: false
+
+- name: Save bootstrap password to file
+  copy:
+    content: "{{ bootstrap_password.stdout }}"
+    dest: "{{ rancher_password_file }}"
+    owner: ubuntu
+    group: ubuntu
+    mode: '0600'
+  when: bootstrap_password.stdout != ""
+
+- name: Display Rancher access information
+  debug:
+    msg:
+      - "==========================================="
+      - "Rancher is ready!"
+      - "URL: https://{{ ansible_host }}"
+      - "Bootstrap Password: {{ bootstrap_password.stdout }}"
+      - "==========================================="
+  when: bootstrap_password.stdout != ""
+
+- name: Wait for Rancher API to be available (check via ping)
+  uri:
+    url: "https://{{ ansible_host }}/ping"
+    method: GET
+    validate_certs: no
+    status_code: 200
+    return_content: yes
+  register: api_result
+  until: api_result.status == 200 and api_result.content == "pong"
+  retries: 30
+  delay: 10
+
+- name: Verify Rancher is fully initialized
+  uri:
+    url: "https://{{ ansible_host }}/v3"
+    method: GET
+    validate_certs: no
+    status_code: [200, 401]
+  register: v3_check
+  until: v3_check.status in [200, 401]
+  retries: 10
+  delay: 5
+
+- name: Display Rancher API status
+  debug:
+    msg: "Rancher API is responding (status: {{ v3_check.status }})"
+
+# ============================================
+# Automatic Cluster Creation and Registration
+# ============================================
+
+- name: Login with bootstrap password
+  uri:
+    url: "https://{{ ansible_host }}/v3-public/localProviders/local?action=login"
+    method: POST
+    validate_certs: no
+    body_format: json
+    body:
+      username: "admin"
+      password: "{{ bootstrap_password.stdout }}"
+    status_code: [201]
+  register: login_response
+  retries: 5
+  delay: 10
+  until: login_response.status == 201
+  ignore_errors: yes
+
+- name: Try login with configured password (if bootstrap failed)
+  uri:
+    url: "https://{{ ansible_host }}/v3-public/localProviders/local?action=login"
+    method: POST
+    validate_certs: no
+    body_format: json
+    body:
+      username: "admin"
+      password: "{{ rancher_admin_password }}"
+    status_code: [201]
+  register: configured_login_response
+  when: login_response.failed | default(false) or login_response.status != 201
+  ignore_errors: yes
+
+- name: Change admin password (if logged in with bootstrap)
+  uri:
+    url: "https://{{ ansible_host }}/v3/users?action=changepassword"
+    method: POST
+    validate_certs: no
+    headers:
+      Authorization: "Bearer {{ login_response.json.token }}"
+    body_format: json
+    body:
+      currentPassword: "{{ bootstrap_password.stdout }}"
+      newPassword: "{{ rancher_admin_password }}"
+    status_code: [200]
+  register: password_change
+  when: login_response.status == 201
+  ignore_errors: yes
+
+- name: Login with new password after change
+  uri:
+    url: "https://{{ ansible_host }}/v3-public/localProviders/local?action=login"
+    method: POST
+    validate_certs: no
+    body_format: json
+    body:
+      username: "admin"
+      password: "{{ rancher_admin_password }}"
+    status_code: [201]
+  register: new_login_response
+  when: password_change.status | default(0) == 200
+  retries: 3
+  delay: 5
+  until: new_login_response.status == 201
+
+- name: Save API token (from new password login)
+  set_fact:
+    rancher_api_token: "{{ new_login_response.json.token }}"
+  when:
+    - new_login_response is defined
+    - new_login_response is not skipped
+    - new_login_response.status == 201
+
+- name: Save API token (from configured password login)
+  set_fact:
+    rancher_api_token: "{{ configured_login_response.json.token }}"
+  when:
+    - rancher_api_token is not defined
+    - configured_login_response is defined
+    - configured_login_response is not skipped
+    - configured_login_response.status == 201
+
+- name: Save API token (from bootstrap login)
+  set_fact:
+    rancher_api_token: "{{ login_response.json.token }}"
+  when:
+    - rancher_api_token is not defined
+    - login_response is defined
+    - login_response.status | default(0) == 201
+
+- name: Set server URL
+  uri:
+    url: "https://{{ ansible_host }}/v3/settings/server-url"
+    method: PUT
+    validate_certs: no
+    headers:
+      Authorization: "Bearer {{ rancher_api_token }}"
+    body_format: json
+    body:
+      name: "server-url"
+      value: "https://{{ ansible_host }}"
+    status_code: [200]
+
+- name: Set default Kubernetes versions by cluster type
+  set_fact:
+    default_k8s_versions:
+      k3s: "v1.28.13+k3s1"
+      rke2: "v1.28.13+rke2r1"
+      rke1: "v1.27.16-rancher1-1"
+
+- name: Select Kubernetes version
+  set_fact:
+    selected_k8s_version: "{{ rancher_kubernetes_version if rancher_kubernetes_version != '' else default_k8s_versions[rancher_cluster_type] }}"
+
+- name: Display selected cluster configuration
+  debug:
+    msg:
+      - "Cluster Type: {{ rancher_cluster_type }}"
+      - "Kubernetes Version: {{ selected_k8s_version }}"
+
+- name: Create cluster
+  uri:
+    url: "https://{{ ansible_host }}/v1/provisioning.cattle.io.clusters"
+    method: POST
+    validate_certs: no
+    headers:
+      Authorization: "Bearer {{ rancher_api_token }}"
+    body_format: json
+    body:
+      type: "provisioning.cattle.io.cluster"
+      metadata:
+        namespace: "fleet-default"
+        name: "{{ rancher_cluster_name }}"
+      spec:
+        kubernetesVersion: "{{ selected_k8s_version }}"
+        rkeConfig:
+          machinePools: []
+    status_code: [201]
+  register: cluster_response
+
+- name: Debug cluster response
+  debug:
+    var: cluster_response.json
+
+- name: Extract cluster ID
+  set_fact:
+    cluster_id: "{{ cluster_response.json.metadata.name }}"
+
+- name: Wait for cluster registration token to be created
+  uri:
+    url: "https://{{ ansible_host }}/v3/clusterregistrationtokens?clusterId={{ cluster_id }}"
+    method: GET
+    validate_certs: no
+    headers:
+      Authorization: "Bearer {{ rancher_api_token }}"
+    status_code: [200]
+  register: token_response
+  until: token_response.json.data | length > 0
+  retries: 30
+  delay: 10
+
+- name: Extract registration command
+  set_fact:
+    registration_command: "{{ token_response.json.data[0].insecureCommand }}"
+
+- name: Save registration command to file
+  copy:
+    content: "{{ registration_command }}"
+    dest: "{{ rancher_registration_file }}"
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+
+- name: Display cluster information
+  debug:
+    msg:
+      - "==========================================="
+      - "Cluster created successfully!"
+      - "Cluster Name: {{ rancher_cluster_name }}"
+      - "Registration command saved to: {{ rancher_registration_file }}"
+      - "Workers will be registered automatically"
+      - "==========================================="

@@ -1,0 +1,15 @@
+---
+rancher_version: "latest"
+rancher_container_name: "rancher"
+rancher_data_dir: "/opt/rancher"
+rancher_http_port: 80
+rancher_https_port: 443
+rancher_password_file: "/home/ubuntu/rancher-password.txt"
+rancher_api_timeout: 300
+
+# Cluster configuration
+rancher_cluster_name: "local-cluster"
+rancher_cluster_type: "k3s"  # Options: k3s (recommended), rke2, rke1
+rancher_kubernetes_version: ""  # Empty means latest available
+rancher_admin_password: "AdminPassword123"  # Change this in production! Must be 12+ characters
+rancher_registration_file: "/home/ubuntu/cluster-registration-cmd.sh"

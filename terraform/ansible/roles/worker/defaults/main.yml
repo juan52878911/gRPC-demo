@@ -1,0 +1,3 @@
+---
+rancher_registration_wait_timeout: 600
+registration_check_interval: 10

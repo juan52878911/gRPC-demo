@@ -1,0 +1,66 @@
+---
+- name: Check if node is already registered
+  shell: docker ps | grep rancher-agent || true
+  register: agent_check
+  changed_when: false
+
+- name: Display registration status
+  debug:
+    msg: "Node already registered with Rancher"
+  when: "'rancher-agent' in agent_check.stdout"
+
+- name: Wait for registration command file on master
+  stat:
+    path: /home/ubuntu/cluster-registration-cmd.sh
+  delegate_to: "{{ groups['master'][0] }}"
+  register: master_reg_file
+  retries: 30
+  delay: 10
+  until: master_reg_file.stat.exists | default(false)
+  when: "'rancher-agent' not in agent_check.stdout"
+
+- name: Fetch registration command from master
+  slurp:
+    src: /home/ubuntu/cluster-registration-cmd.sh
+  delegate_to: "{{ groups['master'][0] }}"
+  register: registration_command_encoded
+  when:
+    - "'rancher-agent' not in agent_check.stdout"
+    - master_reg_file.stat.exists
+
+- name: Decode registration command
+  set_fact:
+    registration_command: "{{ registration_command_encoded.content | b64decode | trim }}"
+  when:
+    - "'rancher-agent' not in agent_check.stdout"
+    - registration_command_encoded is defined
+
+- name: Execute Rancher registration command
+  shell: "{{ registration_command }}"
+  when:
+    - "'rancher-agent' not in agent_check.stdout"
+    - registration_command is defined
+    - registration_command != ""
+  register: registration_result
+  async: 300
+  poll: 0
+
+- name: Wait for registration to complete
+  pause:
+    seconds: 30
+  when: "'rancher-agent' not in agent_check.stdout"
+
+- name: Wait for rancher-agent container to start
+  shell: docker ps | grep rancher-agent || true
+  register: agent_running
+  until: "'rancher-agent' in agent_running.stdout"
+  retries: 30
+  delay: 10
+  when: "'rancher-agent' not in agent_check.stdout"
+
+- name: Display registration result
+  debug:
+    msg:
+      - "Worker node successfully registered with Rancher!"
+      - "Rancher agent container is running"
+  when: "'rancher-agent' in agent_running.stdout or 'rancher-agent' in agent_check.stdout"

@@ -1,0 +1,33 @@
+---
+# Simplified playbook to setup master and prepare for manual cluster configuration
+- name: Setup Rancher Master and Workers with Manual Cluster Creation
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Setup Master Node
+      include_role:
+        name: master
+      when: inventory_hostname in groups['master']
+
+    - name: Display next steps for cluster creation
+      debug:
+        msg:
+          - "==========================================="
+          - "RANCHER MASTER READY"
+          - "==========================================="
+          - ""
+          - "Access Rancher at: https://{{ hostvars[groups['master'][0]]['ansible_host'] }}"
+          - ""
+          - "Next steps:"
+          - "1. Login to Rancher UI"
+          - "2. Create a new Custom cluster"
+          - "3. Select 'etcd', 'Control Plane', and 'Worker' roles"
+          - "4. Copy the registration command"
+          - "5. Create a file with the command: ansible/registration_cmd.sh"
+          - "6. Run: ./deploy-workers.sh"
+          - ""
+          - "==========================================="
+      when: inventory_hostname in groups['master']
+      run_once: true

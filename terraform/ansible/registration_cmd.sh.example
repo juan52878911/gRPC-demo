@@ -1,0 +1,14 @@
+#!/bin/bash
+# Rancher Worker Registration Command Template
+#
+# INSTRUCTIONS:
+# 1. Go to your Rancher UI (https://YOUR_RANCHER_IP)
+# 2. Create a new cluster or select an existing one
+# 3. Click on "Registration" tab
+# 4. Copy the command that starts with: curl -fL https://...
+# 5. Replace the command below with your actual registration command
+# 6. Save this file as 'registration_cmd.sh' (remove the .example extension)
+# 7. Run: ./deploy-workers.sh
+
+# Replace this line with your actual registration command:
+curl -fL https://YOUR_RANCHER_IP/system-agent-install.sh | sudo sh -s - --server https://YOUR_RANCHER_IP --label 'cattle.io/os=linux' --token YOUR_TOKEN --ca-checksum YOUR_CHECKSUM --etcd --controlplane --worker

@@ -1,6 +1,6 @@
 variable "master_cpus" {
   description = "Número de CPUs del nodo master"
-  default     = 4
+  default     = 2
 }
 
 variable "master_memory" {
@@ -30,5 +30,11 @@ variable "worker_disk" {
 
 variable "worker_count" {
   description = "Cantidad de nodos worker a crear"
-  default     = 4
+  default     = 2
+}
+
+variable "ssh_public_key_path" {
+  description = "Ruta a tu llave pública SSH"
+  type        = string
+  default     = "~/.ssh/id_rsa.pub"
 }
