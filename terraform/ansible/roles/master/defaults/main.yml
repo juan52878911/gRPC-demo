@@ -11,5 +11,19 @@ rancher_api_timeout: 300
 rancher_cluster_name: "local-cluster"
 rancher_cluster_type: "k3s"  # Options: k3s (recommended), rke2, rke1
 rancher_kubernetes_version: ""  # Empty means latest available
+rancher_cluster_description: "K3s cluster created via Ansible automation"
+rancher_cluster_labels:
+  environment: "development"
+  provisioner: "ansible"
+  cluster_type: "k3s"
+  distribution: "k3s"
+rancher_cluster_annotations:
+  created_by: "rancher-ansible-automation"
+  cluster_purpose: "Development and testing with K3s"
+  kubernetes_distribution: "k3s"
 rancher_admin_password: "AdminPassword123"  # Change this in production! Must be 12+ characters
 rancher_registration_file: "/home/ubuntu/cluster-registration-cmd.sh"
+
+# K3s configuration
+install_k3s: true
+k3s_version: "v1.28.13+k3s1"

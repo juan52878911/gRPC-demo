@@ -97,23 +97,7 @@
 # Automatic Cluster Creation and Registration
 # ============================================
 
-- name: Login with bootstrap password
-  uri:
-    url: "https://{{ ansible_host }}/v3-public/localProviders/local?action=login"
-    method: POST
-    validate_certs: no
-    body_format: json
-    body:
-      username: "admin"
-      password: "{{ bootstrap_password.stdout }}"
-    status_code: [201]
-  register: login_response
-  retries: 5
-  delay: 10
-  until: login_response.status == 201
-  ignore_errors: yes
-
-- name: Try login with configured password (if bootstrap failed)
+- name: Check if password was already changed
   uri:
     url: "https://{{ ansible_host }}/v3-public/localProviders/local?action=login"
     method: POST
@@ -122,67 +106,59 @@
     body:
       username: "admin"
       password: "{{ rancher_admin_password }}"
-    status_code: [201]
-  register: configured_login_response
-  when: login_response.failed | default(false) or login_response.status != 201
+    status_code: [201, 401]
+  register: configured_login_check
   ignore_errors: yes
 
-- name: Change admin password (if logged in with bootstrap)
-  uri:
-    url: "https://{{ ansible_host }}/v3/users?action=changepassword"
-    method: POST
-    validate_certs: no
-    headers:
-      Authorization: "Bearer {{ login_response.json.token }}"
-    body_format: json
-    body:
-      currentPassword: "{{ bootstrap_password.stdout }}"
-      newPassword: "{{ rancher_admin_password }}"
-    status_code: [200]
-  register: password_change
-  when: login_response.status == 201
-  ignore_errors: yes
+- name: Login and change password (first time setup)
+  block:
+    - name: Login with bootstrap password
+      uri:
+        url: "https://{{ ansible_host }}/v3-public/localProviders/local?action=login"
+        method: POST
+        validate_certs: no
+        body_format: json
+        body:
+          username: "admin"
+          password: "{{ bootstrap_password.stdout }}"
+        status_code: [201]
+      register: bootstrap_login
 
-- name: Login with new password after change
-  uri:
-    url: "https://{{ ansible_host }}/v3-public/localProviders/local?action=login"
-    method: POST
-    validate_certs: no
-    body_format: json
-    body:
-      username: "admin"
-      password: "{{ rancher_admin_password }}"
-    status_code: [201]
-  register: new_login_response
-  when: password_change.status | default(0) == 200
-  retries: 3
-  delay: 5
-  until: new_login_response.status == 201
+    - name: Change admin password
+      uri:
+        url: "https://{{ ansible_host }}/v3/users?action=changepassword"
+        method: POST
+        validate_certs: no
+        headers:
+          Authorization: "Bearer {{ bootstrap_login.json.token }}"
+        body_format: json
+        body:
+          currentPassword: "{{ bootstrap_password.stdout }}"
+          newPassword: "{{ rancher_admin_password }}"
+        status_code: [200]
 
-- name: Save API token (from new password login)
+    - name: Login with new password
+      uri:
+        url: "https://{{ ansible_host }}/v3-public/localProviders/local?action=login"
+        method: POST
+        validate_certs: no
+        body_format: json
+        body:
+          username: "admin"
+          password: "{{ rancher_admin_password }}"
+        status_code: [201]
+      register: final_login
+
+    - name: Save API token
+      set_fact:
+        rancher_api_token: "{{ final_login.json.token }}"
+
+  when: configured_login_check.status == 401
+
+- name: Use existing configured password (already setup)
   set_fact:
-    rancher_api_token: "{{ new_login_response.json.token }}"
-  when:
-    - new_login_response is defined
-    - new_login_response is not skipped
-    - new_login_response.status == 201
-
-- name: Save API token (from configured password login)
-  set_fact:
-    rancher_api_token: "{{ configured_login_response.json.token }}"
-  when:
-    - rancher_api_token is not defined
-    - configured_login_response is defined
-    - configured_login_response is not skipped
-    - configured_login_response.status == 201
-
-- name: Save API token (from bootstrap login)
-  set_fact:
-    rancher_api_token: "{{ login_response.json.token }}"
-  when:
-    - rancher_api_token is not defined
-    - login_response is defined
-    - login_response.status | default(0) == 201
+    rancher_api_token: "{{ configured_login_check.json.token }}"
+  when: configured_login_check.status == 201
 
 - name: Set server URL
   uri:
@@ -197,52 +173,49 @@
       value: "https://{{ ansible_host }}"
     status_code: [200]
 
-- name: Set default Kubernetes versions by cluster type
-  set_fact:
-    default_k8s_versions:
-      k3s: "v1.28.13+k3s1"
-      rke2: "v1.28.13+rke2r1"
-      rke1: "v1.27.16-rancher1-1"
-
-- name: Select Kubernetes version
-  set_fact:
-    selected_k8s_version: "{{ rancher_kubernetes_version if rancher_kubernetes_version != '' else default_k8s_versions[rancher_cluster_type] }}"
-
-- name: Display selected cluster configuration
-  debug:
-    msg:
-      - "Cluster Type: {{ rancher_cluster_type }}"
-      - "Kubernetes Version: {{ selected_k8s_version }}"
-
-- name: Create cluster
+- name: Check if custom cluster already exists
   uri:
-    url: "https://{{ ansible_host }}/v1/provisioning.cattle.io.clusters"
+    url: "https://{{ ansible_host }}/v3/clusters?name={{ rancher_cluster_name }}"
+    method: GET
+    validate_certs: no
+    headers:
+      Authorization: "Bearer {{ rancher_api_token }}"
+    status_code: [200]
+  register: existing_cluster_check
+
+- name: Create custom cluster for manual node registration (if not exists)
+  uri:
+    url: "https://{{ ansible_host }}/v3/cluster"
     method: POST
     validate_certs: no
     headers:
       Authorization: "Bearer {{ rancher_api_token }}"
     body_format: json
     body:
-      type: "provisioning.cattle.io.cluster"
-      metadata:
-        namespace: "fleet-default"
-        name: "{{ rancher_cluster_name }}"
-      spec:
-        kubernetesVersion: "{{ selected_k8s_version }}"
-        rkeConfig:
-          machinePools: []
+      type: "cluster"
+      name: "{{ rancher_cluster_name }}"
+      description: "{{ rancher_cluster_description }} - Nodes will run K3s"
+      labels: "{{ rancher_cluster_labels }}"
+      annotations: "{{ rancher_cluster_annotations }}"
     status_code: [201]
-  register: cluster_response
+  register: cluster_create_response
+  when: existing_cluster_check.json.data | length == 0
 
-- name: Debug cluster response
-  debug:
-    var: cluster_response.json
-
-- name: Extract cluster ID
+- name: Extract cluster ID from existing cluster
   set_fact:
-    cluster_id: "{{ cluster_response.json.metadata.name }}"
+    cluster_id: "{{ existing_cluster_check.json.data[0].id }}"
+  when: existing_cluster_check.json.data | length > 0
 
-- name: Wait for cluster registration token to be created
+- name: Extract cluster ID from new cluster
+  set_fact:
+    cluster_id: "{{ cluster_create_response.json.id }}"
+  when: existing_cluster_check.json.data | length == 0
+
+- name: Display cluster status
+  debug:
+    msg: "{{ 'Using existing' if existing_cluster_check.json.data | length > 0 else 'Created new' }} custom cluster: {{ rancher_cluster_name }} (ID: {{ cluster_id }})"
+
+- name: Wait for cluster registration token to be auto-created
   uri:
     url: "https://{{ ansible_host }}/v3/clusterregistrationtokens?clusterId={{ cluster_id }}"
     method: GET
@@ -250,14 +223,31 @@
     headers:
       Authorization: "Bearer {{ rancher_api_token }}"
     status_code: [200]
-  register: token_response
-  until: token_response.json.data | length > 0
+  register: token_list_response
+  until: token_list_response.json.data | length > 0
   retries: 30
   delay: 10
 
-- name: Extract registration command
+- name: Get the registration token details
+  uri:
+    url: "{{ token_list_response.json.data[0].links.self }}"
+    method: GET
+    validate_certs: no
+    headers:
+      Authorization: "Bearer {{ rancher_api_token }}"
+    status_code: [200]
+  register: token_response
+  until: token_response.json.insecureNodeCommand is defined and token_response.json.insecureNodeCommand != ""
+  retries: 30
+  delay: 5
+
+- name: Extract registration command (insecure for self-signed certs)
   set_fact:
-    registration_command: "{{ token_response.json.data[0].insecureCommand }}"
+    registration_command: "{{ token_response.json.insecureNodeCommand }}"
+
+- name: Add all roles to registration command (etcd, controlplane, worker)
+  set_fact:
+    registration_command: "{{ registration_command }} --etcd --controlplane --worker"
 
 - name: Save registration command to file
   copy:
@@ -271,8 +261,8 @@
   debug:
     msg:
       - "==========================================="
-      - "Cluster created successfully!"
-      - "Cluster Name: {{ rancher_cluster_name }}"
+      - "Registration token created successfully!"
+      - "Cluster ID: {{ cluster_id }}"
       - "Registration command saved to: {{ rancher_registration_file }}"
       - "Workers will be registered automatically"
       - "==========================================="

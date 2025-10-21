@@ -1,13 +1,14 @@
 ---
-- name: Check if node is already registered
-  shell: docker ps | grep rancher-agent || true
+- name: Check if node is already registered (system-agent)
+  systemd:
+    name: rancher-system-agent
   register: agent_check
-  changed_when: false
+  ignore_errors: yes
 
 - name: Display registration status
   debug:
-    msg: "Node already registered with Rancher"
-  when: "'rancher-agent' in agent_check.stdout"
+    msg: "Node already registered with Rancher (system-agent running)"
+  when: agent_check.status is defined and agent_check.status.ActiveState == "active"
 
 - name: Wait for registration command file on master
   stat:
@@ -17,7 +18,7 @@
   retries: 30
   delay: 10
   until: master_reg_file.stat.exists | default(false)
-  when: "'rancher-agent' not in agent_check.stdout"
+  when: agent_check.status is not defined or agent_check.status.ActiveState != "active"
 
 - name: Fetch registration command from master
   slurp:
@@ -25,42 +26,59 @@
   delegate_to: "{{ groups['master'][0] }}"
   register: registration_command_encoded
   when:
-    - "'rancher-agent' not in agent_check.stdout"
-    - master_reg_file.stat.exists
+    - agent_check.status is not defined or agent_check.status.ActiveState != "active"
+    - master_reg_file.stat.exists | default(false)
 
 - name: Decode registration command
   set_fact:
     registration_command: "{{ registration_command_encoded.content | b64decode | trim }}"
   when:
-    - "'rancher-agent' not in agent_check.stdout"
+    - agent_check.status is not defined or agent_check.status.ActiveState != "active"
     - registration_command_encoded is defined
+    - registration_command_encoded is not skipped
 
-- name: Execute Rancher registration command
-  shell: "{{ registration_command }}"
+- name: Display registration command for debugging
+  debug:
+    msg: "Will execute: {{ registration_command }}"
   when:
-    - "'rancher-agent' not in agent_check.stdout"
+    - agent_check.status is not defined or agent_check.status.ActiveState != "active"
+    - registration_command is defined
+
+- name: Execute Rancher registration command with full output
+  shell: |
+    set -o pipefail
+    {{ registration_command }} 2>&1 | tee /tmp/rancher-registration.log
+  args:
+    executable: /bin/bash
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  become: yes
+  when:
+    - agent_check.status is not defined or agent_check.status.ActiveState != "active"
     - registration_command is defined
     - registration_command != ""
   register: registration_result
-  async: 300
-  poll: 0
 
-- name: Wait for registration to complete
-  pause:
-    seconds: 30
-  when: "'rancher-agent' not in agent_check.stdout"
+- name: Display registration output
+  debug:
+    var: registration_result.stdout_lines
+  when:
+    - registration_result is defined
+    - registration_result.stdout_lines is defined
 
-- name: Wait for rancher-agent container to start
-  shell: docker ps | grep rancher-agent || true
-  register: agent_running
-  until: "'rancher-agent' in agent_running.stdout"
+- name: Wait for system-agent service to be created
+  systemd:
+    name: rancher-system-agent
+    daemon_reload: yes
+  register: service_check
+  until: service_check is succeeded
   retries: 30
   delay: 10
-  when: "'rancher-agent' not in agent_check.stdout"
+  when: agent_check.status is not defined or agent_check.status.ActiveState != "active"
 
 - name: Display registration result
   debug:
     msg:
       - "Worker node successfully registered with Rancher!"
-      - "Rancher agent container is running"
-  when: "'rancher-agent' in agent_running.stdout or 'rancher-agent' in agent_check.stdout"
+      - "Rancher system-agent is running"
+  when: service_check is succeeded or (agent_check.status is defined and agent_check.status.ActiveState == "active")

@@ -104,56 +104,57 @@ if [ ! -f inventory.ini ]; then
     exit 1
 fi
 
-echo -e "${BLUE}Ejecutando playbook de Ansible para instalar Rancher...${NC}"
+echo -e "${BLUE}Ejecutando playbook de Ansible para instalar Rancher y crear cluster...${NC}"
 ansible-playbook -i inventory.ini site.yml --tags master
+
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Error al configurar Rancher Master${NC}"
+    exit 1
+fi
+
+echo ""
+echo -e "${GREEN}✓ Rancher Master configurado exitosamente${NC}"
+echo ""
+echo -e "${BLUE}Paso 4: Registrando workers al cluster...${NC}"
+ansible-playbook -i inventory.ini site.yml --tags workers
+
+if [ $? -ne 0 ]; then
+    echo -e "${YELLOW}⚠ Algunos workers pueden haber fallado. Verifica los logs arriba.${NC}"
+fi
 
 cd ..
 
 # Información final
 echo ""
-echo -e "${GREEN}=====================================${NC}"
-echo -e "${GREEN}=== Instalación Completada ===${NC}"
-echo -e "${GREEN}=====================================${NC}"
+echo -e "${GREEN}=================================================${NC}"
+echo -e "${GREEN}=== Instalación Completa y Automatizada ===${NC}"
+echo -e "${GREEN}=================================================${NC}"
 echo ""
 
-echo -e "${GREEN}🎉 Rancher Master está listo!${NC}"
+echo -e "${GREEN}🎉 ¡Rancher Cluster está listo!${NC}"
 echo ""
 echo -e "📍 Accede a Rancher en: ${BLUE}https://$MASTER_IP${NC}"
+echo -e "👤 Usuario: ${BLUE}admin${NC}"
+echo -e "🔑 Contraseña: ${BLUE}AdminPassword123${NC}"
 echo ""
 
-# Obtener la contraseña
-echo -e "${YELLOW}Contraseña de Bootstrap:${NC}"
-if multipass exec rancher-master -- cat /home/ubuntu/rancher-password.txt 2>/dev/null; then
-    echo ""
-else
-    echo -e "${YELLOW}Ejecuta este comando para obtener la contraseña:${NC}"
-    echo -e "${BLUE}multipass exec rancher-master -- cat /home/ubuntu/rancher-password.txt${NC}"
-    echo ""
-fi
+echo -e "${GREEN}📊 Cluster Info:${NC}"
+echo -e "  Cluster Name: local-cluster"
+echo -e "  Nodes: 2 workers (+ master if joined)"
+echo -e "  Status: Provisioning (espera 3-5 minutos para que K8s se instale)"
+echo ""
 
 echo -e "📋 Recursos creados:"
 terraform output
 echo ""
 
-echo -e "${GREEN}📝 Próximos pasos para configurar el cluster:${NC}"
-echo ""
-echo "1. Abre tu navegador en https://$MASTER_IP"
-echo "2. Acepta el certificado autofirmado"
-echo "3. Usa la contraseña de bootstrap mostrada arriba"
-echo "4. Configura la contraseña de admin y la URL del servidor"
-echo "5. Crea un nuevo cluster Custom:"
-echo "   - Cluster Management → Create"
-echo "   - Selecciona 'Custom'"
-echo "   - Marca las opciones: etcd, Control Plane, Worker"
-echo "   - Copia el comando de registro que aparece"
-echo "6. Guarda el comando en: ansible/registration_cmd.sh"
-echo "7. Ejecuta: cd ansible && ./deploy-workers.sh"
+echo -e "${YELLOW}💡 Comandos útiles:${NC}"
+echo "  Ver estado VMs: ${BLUE}multipass list${NC}"
+echo "  Conectar al master: ${BLUE}multipass shell rancher-master${NC}"
+echo "  Ver logs de Rancher: ${BLUE}multipass exec rancher-master -- docker logs -f rancher${NC}"
+echo "  Ver logs de system-agent: ${BLUE}multipass exec worker-1 -- journalctl -u rancher-system-agent -f${NC}"
+echo "  Destruir todo: ${BLUE}terraform destroy -auto-approve${NC}"
 echo ""
 
-echo -e "${YELLOW}💡 Comandos útiles:${NC}"
-echo "  Ver estado VMs: multipass list"
-echo "  Conectar al master: multipass shell rancher-master"
-echo "  Ver logs de Rancher: multipass exec rancher-master -- docker logs -f rancher"
-echo "  Deploy workers: cd ansible && ./deploy-workers.sh"
-echo "  Destruir todo: terraform destroy -auto-approve"
+echo -e "${GREEN}✨ El cluster se está configurando automáticamente. En unos minutos verás los nodos activos en el dashboard.${NC}"
 echo ""
